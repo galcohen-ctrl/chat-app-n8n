@@ -122,10 +122,12 @@ function LoginForm({ onLogin }: { onLogin: (userData: { email: string; name: str
 // Chat Interface Component with Direct HTTP Response
 function ChatInterface({ user, onLogout }: { user: { email: string; name: string }; onLogout: () => void }) {
   const [question, setQuestion] = useState('');
-  const [chatState, setChatState] = useState<'idle' | 'waiting' | 'completed'>('idle');
+  const [chatState, setChatState] = useState<'idle' | 'waiting' | 'completed' | 'rating'>('idle');
   const [currentSession, setCurrentSession] = useState<{ question: string; sessionId: string } | null>(null);
   const [response, setResponse] = useState('');
   const [error, setError] = useState('');
+  const [showRatingModal, setShowRatingModal] = useState(false);
+  const [isSubmittingRating, setIsSubmittingRating] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -135,6 +137,18 @@ function ChatInterface({ user, onLogout }: { user: { email: string; name: string
   useEffect(() => {
     scrollToBottom();
   }, [chatState, response]);
+
+  // Check for pending rating on mount
+  useEffect(() => {
+    const pendingRating = sessionStorage.getItem('pendingRating');
+    if (pendingRating) {
+      const { question, answer } = JSON.parse(pendingRating);
+      setCurrentSession({ question, sessionId: '' });
+      setResponse(answer);
+      setChatState('rating');
+      setShowRatingModal(true);
+    }
+  }, []);
 
   const generateSessionId = () => {
     return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
@@ -190,6 +204,12 @@ function ChatInterface({ user, onLogout }: { user: { email: string; name: string
       const aiResponse = data.response || data.answer || data.message || 'Response received';
       setResponse(aiResponse);
       setChatState('completed');
+
+      // Store in sessionStorage for rating persistence
+      sessionStorage.setItem('pendingRating', JSON.stringify({
+        question: userQuestion,
+        answer: aiResponse
+      }));
     } catch (error: any) {
       console.error('Webhook error:', error);
       setError(`Error: ${error.message || 'Unknown error'}`);
@@ -199,10 +219,53 @@ function ChatInterface({ user, onLogout }: { user: { email: string; name: string
   };
 
   const handleNewQuestion = () => {
-    setChatState('idle');
-    setCurrentSession(null);
-    setResponse('');
-    setError('');
+    // Show rating modal instead of immediately starting new question
+    setShowRatingModal(true);
+    setChatState('rating');
+  };
+
+  const handleRatingSubmit = async (rating: number) => {
+    if (!currentSession || !response) return;
+
+    setIsSubmittingRating(true);
+
+    try {
+      // Send rating to n8n webhook
+      const ratingWebhook = 'https://comosense.app.n8n.cloud/webhook/9db5b565-c34b-47f4-b2ef-61cab6134b16';
+
+      await fetch('/api/rating', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          webhook_url: ratingWebhook,
+          name: user.name,
+          question: currentSession.question,
+          ai_answer: response,
+          rating: rating
+        })
+      });
+
+      // Clear session and allow new question
+      sessionStorage.removeItem('pendingRating');
+      setShowRatingModal(false);
+      setChatState('idle');
+      setCurrentSession(null);
+      setResponse('');
+      setError('');
+    } catch (error) {
+      console.error('Rating submission error:', error);
+      // Still allow new question even if rating fails
+      sessionStorage.removeItem('pendingRating');
+      setShowRatingModal(false);
+      setChatState('idle');
+      setCurrentSession(null);
+      setResponse('');
+      setError('');
+    } finally {
+      setIsSubmittingRating(false);
+    }
   };
 
   const truncateName = (name: string, maxLength = 12) => {
@@ -369,6 +432,73 @@ function ChatInterface({ user, onLogout }: { user: { email: string; name: string
           )}
         </div>
       </main>
+
+      {/* Rating Modal */}
+      <AnimatePresence>
+        {showRatingModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+            onClick={(e) => e.target === e.currentTarget && !isSubmittingRating}
+          >
+            <motion.div
+              initial={{ scale: 0.9, y: 20 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.9, y: 20 }}
+              className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl"
+            >
+              <div className="text-center mb-6">
+                <div className="mx-auto w-16 h-16 bg-gradient-to-br from-amber-400 to-amber-600 rounded-2xl flex items-center justify-center mb-4 shadow-lg">
+                  <MessageCircle className="w-8 h-8 text-white" />
+                </div>
+                <h2 className="text-2xl font-bold text-gray-800 mb-2">Rate the Response</h2>
+                <p className="text-gray-600 text-sm">How helpful was this answer?</p>
+              </div>
+
+              <div className="flex justify-center gap-3 mb-6">
+                {[1, 2, 3, 4, 5, 6].map((rating) => (
+                  <motion.button
+                    key={rating}
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.95 }}
+                    onClick={() => handleRatingSubmit(rating)}
+                    disabled={isSubmittingRating}
+                    className="group relative"
+                  >
+                    <svg
+                      className="w-12 h-12 transition-all duration-200"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      xmlns="http://www.w3.org/2000/svg"
+                    >
+                      <path
+                        d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"
+                        fill="url(#gold-gradient)"
+                        className="group-hover:drop-shadow-lg"
+                      />
+                      <defs>
+                        <linearGradient id="gold-gradient" x1="12" y1="2" x2="12" y2="21.02">
+                          <stop offset="0%" stopColor="#FFD700" />
+                          <stop offset="100%" stopColor="#FFA500" />
+                        </linearGradient>
+                      </defs>
+                    </svg>
+                    <span className="absolute -bottom-6 left-1/2 -translate-x-1/2 text-xs font-semibold text-gray-600">
+                      {rating}
+                    </span>
+                  </motion.button>
+                ))}
+              </div>
+
+              <p className="text-center text-xs text-gray-500 mt-8">
+                {isSubmittingRating ? 'Submitting...' : 'Click a star to rate'}
+              </p>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
